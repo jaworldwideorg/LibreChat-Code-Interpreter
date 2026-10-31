@@ -16,6 +16,7 @@ describe('hosted app preview proxy policy', () => {
 
     expect(headers.get('content-security-policy')).toContain("connect-src 'self'");
     expect(headers.get('content-security-policy')).toContain("worker-src 'none'");
+    expect(headers.get('content-security-policy')).toContain('sandbox allow-scripts allow-forms allow-same-origin');
     expect(headers.get('content-security-policy')).toContain("form-action 'self'");
     expect(headers.get('permissions-policy')).toContain('camera=()');
     expect(headers.get('x-dns-prefetch-control')).toBe('off');

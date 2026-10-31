@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { env } from '../config';
 import type { AuthenticatedRequest } from '../types';
-import { readRuntimeSessionRecord } from '../runtime-session/registry';
+import { readRuntimeSessionRecord, consumeHostedAppPreviewGrant } from '../runtime-session/registry';
 import { HostedAppControlPlaneError } from './control-plane';
 import {
   hostedAppRuntimeIdFromHostname,
@@ -13,6 +13,8 @@ import {
 } from './preview-access';
 import { proxyHostedAppPreview } from './preview-proxy';
 import { applyHostedAppPreviewSecurityHeaders } from './proxy-policy';
+import { sendHostedAppPreviewViewer } from './preview-viewer';
+import { assertPreviewBrowser, createPreviewBrowserChallenge, HOSTED_APP_BROWSER_COOKIE, PREVIEW_BROWSER_TTL_MS } from './preview-grant';
 
 const COOKIE_NAME = '__Host-codeapi-app';
 const PREVIEW_COOKIE_TTL_MS = 60 * 60_000;
@@ -50,15 +52,19 @@ export function sendHostedAppPreviewAuthorizationHandoff(
   res: Response,
   sessionToken: string,
   maxAge: number,
+  browserNonce?: string,
 ): Response {
-  res.setHeader('Set-Cookie', [
+  const sessionCookie = [
     `${COOKIE_NAME}=${encodeURIComponent(sessionToken)}`,
     'Path=/',
     'HttpOnly',
     'Secure',
     'SameSite=Strict',
     `Max-Age=${maxAge}`,
-  ].join('; '));
+  ].join('; ');
+  res.setHeader('Set-Cookie', browserNonce != null ? [sessionCookie,
+    `${HOSTED_APP_BROWSER_COOKIE}=${browserNonce}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`,
+  ] : sessionCookie);
   res.setHeader('Cache-Control', 'no-store');
   return res.status(200).type('html').send([
     '<!doctype html>',
@@ -79,11 +85,25 @@ export async function hostedAppPreviewGateway(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  if (!env.HOSTED_APPS_ENABLED || !env.HOSTED_APP_PREVIEW_ORIGIN) return next();
+  if (!env.HOSTED_APP_PREVIEW_ORIGIN) return next();
   const hostname = hostedAppRequestHostname(req.headers.host);
   const runtimeId = hostname
     ? hostedAppRuntimeIdFromHostname(hostname, env.HOSTED_APP_PREVIEW_ORIGIN)
     : undefined;
+  const viewerHost = hostname === new URL(env.HOSTED_APP_PREVIEW_ORIGIN).hostname;
+  if (!viewerHost && runtimeId == null) return next();
+  res.locals.codeapiMetricPath = viewerHost ? '/hosted-app-viewer/*' : '/hosted-app-preview/*';
+  if (!env.HOSTED_APPS_ENABLED) { reject(res, 404, 'Preview is unavailable');return; }
+  if (viewerHost) {
+    res.locals.codeapiMetricPath = '/hosted-app-viewer/*';
+    const match = /^\/viewer\/(happ_[a-f0-9]{40})$/.exec(req.path);
+    if (req.method !== 'GET' || !match || !env.HOSTED_APP_PARENT_ORIGIN) {
+      reject(res, 404, 'Preview viewer is unavailable');return;
+    }
+    try { sendHostedAppPreviewViewer(req, res, match[1] as string, env.HOSTED_APP_PREVIEW_ORIGIN, env.HOSTED_APP_PARENT_ORIGIN); }
+    catch { reject(res, 400, 'Invalid preview viewer request'); }
+    return;
+  }
   if (!runtimeId) return next();
 
   /* A wildcard app host is a separate, unprivileged origin. Never fall through
@@ -91,14 +111,23 @@ export async function hostedAppPreviewGateway(
   /* App routes are arbitrary user data. Collapse them before the outer metrics
    * middleware records its completion event so Prometheus labels stay bounded. */
   res.locals.codeapiMetricPath = '/hosted-app-preview/*';
-  applyHostedAppPreviewSecurityHeaders(res);
+  applyHostedAppPreviewSecurityHeaders(res, env.HOSTED_APP_PREVIEW_ORIGIN, env.HOSTED_APP_PARENT_ORIGIN || undefined);
   try {
+    if (req.path === '/__codeapi/challenge') {
+      if (req.method !== 'GET') { reject(res, 405, 'Invalid preview challenge request');return; }
+      const browser = createPreviewBrowserChallenge(runtimeId, previewKey());
+      res.setHeader('Set-Cookie', `${HOSTED_APP_BROWSER_COOKIE}=${browser.nonce}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${PREVIEW_BROWSER_TTL_MS / 1000}`);
+      const viewerOrigin = new URL(env.HOSTED_APP_PREVIEW_ORIGIN).origin;
+      res.status(200).type('html').send(`<!doctype html><html><head><meta charset="utf-8"><title>Preparing preview</title></head><body><script>window.parent.postMessage({type:'codeapi.preview.challenge',challenge:${JSON.stringify(browser.token)}},${JSON.stringify(viewerOrigin)})</script></body></html>`);
+      return;
+    }
     if (req.path === '/__codeapi/authorize') {
       if (req.method !== 'GET' || typeof req.query.token !== 'string') {
         reject(res, 400, 'Invalid preview authorization request');
         return;
       }
       const linkClaims = verifyHostedAppPreviewAccess(req.query.token, previewKey());
+      assertPreviewBrowser(linkClaims, cookie(req, HOSTED_APP_BROWSER_COOKIE), 'grant', previewKey());
       if (linkClaims.hostedAppRuntimeId !== runtimeId) {
         reject(res, 403, 'Preview authorization does not match this app');
         return;
@@ -131,12 +160,17 @@ export async function hostedAppPreviewGateway(
         reject(res, 409, 'Hosted app lease has expired');
         return;
       }
+      if (!await consumeHostedAppPreviewGrant(linkClaims.grantId as string, linkClaims.expiresAt)) {
+        reject(res, 401, 'Preview authorization was already used or expired');return;
+      }
       const sessionToken = signHostedAppPreviewAccess({
         ...linkClaims,
+        purpose: 'session',
+        grantId: undefined,
         expiresAt,
       }, previewKey());
       const maxAge = Math.max(1, Math.floor((expiresAt - Date.now()) / 1_000));
-      sendHostedAppPreviewAuthorizationHandoff(res, sessionToken, maxAge);
+      sendHostedAppPreviewAuthorizationHandoff(res, sessionToken, maxAge, cookie(req, HOSTED_APP_BROWSER_COOKIE));
       return;
     }
 
@@ -146,6 +180,7 @@ export async function hostedAppPreviewGateway(
       return;
     }
     const claims = verifyHostedAppPreviewAccess(sessionToken, previewKey());
+    assertPreviewBrowser(claims, cookie(req, HOSTED_APP_BROWSER_COOKIE), 'session', previewKey());
     if (claims.hostedAppRuntimeId !== runtimeId) {
       reject(res, 403, 'Preview authorization does not match this app');
       return;

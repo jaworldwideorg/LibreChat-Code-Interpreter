@@ -232,10 +232,12 @@ Content-Type: application/json
 ```
 
 `GET /v1/hosted-apps/:app_id?runtime_session_hint=...` returns status and a
-fresh five-minute `preview_url`; the authorization response loads a minimal
-same-origin handoff page before opening the app so the first request includes
-the host-only `SameSite=Strict` preview cookie even when LibreChat is on another
-site. `DELETE` on the same resource terminates the
+non-capability `preview_url` for the trusted viewer. It no longer returns a
+transferable authorization link. The browser handoff and authenticated
+`POST /v1/hosted-apps/:app_id/preview-grant` contract are documented in
+[preview maintenance](preview-maintenance.md). The authorization response
+loads a minimal same-origin handoff page so the first app request includes
+the host-only `SameSite=Strict` preview cookie. `DELETE` on the resource terminates the
 lease. A revision is immutable. Retrying the identical spec reasserts the
 resident process; changing code or launch settings requires a new revision and
 captures a new exact checkpoint. An ambiguous provider launch is replayed only
@@ -264,6 +266,7 @@ key):
 | Env | Default | Meaning |
 |---|---|---|
 | `CODEAPI_HOSTED_APP_PREVIEW_SIGNING_KEY` | — | Different base64 32-byte key for owner-bound preview URL/cookie capabilities. |
+| `CODEAPI_HOSTED_APP_PARENT_ORIGIN` | — | Exact HTTPS LibreChat origin authorized to embed and communicate with the trusted viewer; missing configuration disables the viewer. |
 | `CODEAPI_HOSTED_APP_PREVIEW_ORIGIN` | — | Bare HTTPS origin for wildcard app hosts, for example `https://apps.example.net`. |
 
 Set these on worker pods in addition to the ordinary stateful/checkpoint

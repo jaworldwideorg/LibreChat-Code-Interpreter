@@ -8,7 +8,14 @@ export interface HostedAppPreviewHeaderWriter {
 /** Browser-enforced guardrails owned by the trusted gateway, not user code. */
 export function applyHostedAppPreviewSecurityHeaders(
   response: HostedAppPreviewHeaderWriter,
+  viewerOrigin?: string,
+  parentOrigin?: string,
 ): void {
+  const ancestors = ['\'self\''];
+  if (viewerOrigin != null) {
+    ancestors.splice(0, 1, new URL(viewerOrigin).origin);
+    if (parentOrigin != null) ancestors.push(new URL(parentOrigin).origin);
+  }
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('X-DNS-Prefetch-Control', 'off');
@@ -34,7 +41,8 @@ export function applyHostedAppPreviewSecurityHeaders(
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'self'",
-    "frame-ancestors 'self'",
+    `frame-ancestors ${ancestors.join(' ')}`,
+    'sandbox allow-scripts allow-forms allow-same-origin',
   ].join('; '));
   response.setHeader(
     'Permissions-Policy',

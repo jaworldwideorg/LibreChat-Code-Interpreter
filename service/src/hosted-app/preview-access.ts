@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { HostedAppOwner } from './control-plane';
 import { HOSTED_APP_REVISION_PATTERN } from './spec';
 
-const PREVIEW_TOKEN_VERSION = 'v1';
+const PREVIEW_TOKEN_VERSION = 'v2';
 const RUNTIME_ID_PATTERN = /^happ_[0-9a-f]{40}$/;
 
 export interface HostedAppPreviewClaims {
@@ -10,6 +10,9 @@ export interface HostedAppPreviewClaims {
   revision: string;
   ownerBinding: string;
   expiresAt: number;
+  purpose?: 'challenge' | 'grant' | 'session';
+  browserBinding?: string;
+  grantId?: string;
 }
 
 export class HostedAppPreviewAccessError extends Error {}
@@ -62,6 +65,9 @@ export function signHostedAppPreviewAccess(
     v: claims.revision,
     o: claims.ownerBinding,
     e: claims.expiresAt,
+    ...(claims.purpose != null ? { p: claims.purpose } : {}),
+    ...(claims.browserBinding != null ? { b: claims.browserBinding } : {}),
+    ...(claims.grantId != null ? { g: claims.grantId } : {}),
   }), 'utf8').toString('base64url');
   return `${PREVIEW_TOKEN_VERSION}.${payload}.${signature(payload, key).toString('base64url')}`;
 }
@@ -86,6 +92,7 @@ export function verifyHostedAppPreviewAccess(
   try {
     const parsed = JSON.parse(decodeBase64url(payload, 512).toString('utf8')) as {
       r?: unknown; v?: unknown; o?: unknown; e?: unknown;
+      p?: unknown; b?: unknown; g?: unknown;
     };
     if (
       typeof parsed.r !== 'string'
@@ -96,6 +103,9 @@ export function verifyHostedAppPreviewAccess(
       || !/^[A-Za-z0-9_-]{43}$/.test(parsed.o)
       || !Number.isSafeInteger(parsed.e)
       || (parsed.e as number) <= now
+      || (parsed.p !== undefined && !['challenge', 'grant', 'session'].includes(String(parsed.p)))
+      || (parsed.b !== undefined && (typeof parsed.b !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(parsed.b)))
+      || (parsed.g !== undefined && (typeof parsed.g !== 'string' || !/^[a-f0-9]{32}$/.test(parsed.g)))
     ) {
       throw new Error('claims invalid or expired');
     }
@@ -104,6 +114,9 @@ export function verifyHostedAppPreviewAccess(
       revision: parsed.v,
       ownerBinding: parsed.o,
       expiresAt: parsed.e as number,
+      ...(parsed.p !== undefined ? { purpose: parsed.p as HostedAppPreviewClaims['purpose'] } : {}),
+      ...(typeof parsed.b === 'string' ? { browserBinding: parsed.b } : {}),
+      ...(typeof parsed.g === 'string' ? { grantId: parsed.g } : {}),
     };
   } catch (error) {
     throw new HostedAppPreviewAccessError(

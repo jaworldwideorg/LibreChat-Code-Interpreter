@@ -273,6 +273,14 @@ return generation`,
 
 let redis: RedisWithScripts = registerScripts(connection);
 
+/** Atomic one-use claim. A timeout may consume a grant, but can never make it
+ * replayable; the caller must request a fresh browser-bound grant on failure. */
+export async function consumeHostedAppPreviewGrant(id: string, expiresAt: number): Promise<boolean> {
+  const ttl = Math.floor(expiresAt - Date.now());
+  if (!/^[a-f0-9]{32}$/.test(id) || ttl <= 0 || ttl > 300_000) return false;
+  return await runRegistryCommand('consume preview grant', () => redis.set(`rtsx:preview-grant:${id}`, 'used', 'PX', ttl, 'NX')) === 'OK';
+}
+
 /** Test seam mirroring replay-state.ts: swap in ioredis-mock per test. */
 export function setRedisForTests(client: Redis): void {
   redis = registerScripts(client);

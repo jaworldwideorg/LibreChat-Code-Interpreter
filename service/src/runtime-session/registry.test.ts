@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import RedisMock from 'ioredis-mock';
 import {
   acquireRuntimeSessionLock,
+  consumeHostedAppPreviewGrant,
   allocateCheckpointSequence,
   allocateRuntimeSessionGeneration,
   readRuntimeSessionRecord,
@@ -26,6 +27,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   resetRedisForTests();
+  mock.disconnect();
 });
 
 function record(overrides: Partial<RuntimeSessionRecord> = {}): RuntimeSessionRecord {
@@ -41,6 +43,15 @@ function record(overrides: Partial<RuntimeSessionRecord> = {}): RuntimeSessionRe
 }
 
 describe('runtime session lock', () => {
+  test('a preview grant is consumed exactly once across concurrent replicas', async () => {
+    const id = 'a'.repeat(32);
+    const results = await Promise.all(Array.from({ length: 20 }, () => consumeHostedAppPreviewGrant(id, Date.now() + 60_000)));
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await consumeHostedAppPreviewGrant(id, Date.now() + 60_000)).toBe(false);
+    expect(await consumeHostedAppPreviewGrant('bad', Date.now() + 60_000)).toBe(false);
+    expect(await consumeHostedAppPreviewGrant('b'.repeat(32), Date.now() - 1)).toBe(false);
+    expect(await consumeHostedAppPreviewGrant('c'.repeat(32), Date.now() + 600_000)).toBe(false);
+  });
   test('acquire is exclusive; release makes it available again', async () => {
     const token = await acquireRuntimeSessionLock('rt_abc123');
     expect(token).not.toBeNull();
