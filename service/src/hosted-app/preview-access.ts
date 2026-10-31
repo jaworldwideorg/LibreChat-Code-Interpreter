@@ -57,6 +57,9 @@ export function signHostedAppPreviewAccess(
     || claims.expiresAt <= 0
     || !HOSTED_APP_REVISION_PATTERN.test(claims.revision)
     || !/^[A-Za-z0-9_-]{43}$/.test(claims.ownerBinding)
+    || (claims.purpose !== undefined && !['challenge', 'grant', 'session'].includes(claims.purpose))
+    || (claims.browserBinding !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(claims.browserBinding))
+    || (claims.grantId !== undefined && !/^[a-f0-9]{32}$/.test(claims.grantId))
   ) {
     throw new HostedAppPreviewAccessError('preview claims are invalid');
   }
@@ -103,7 +106,7 @@ export function verifyHostedAppPreviewAccess(
       || !/^[A-Za-z0-9_-]{43}$/.test(parsed.o)
       || !Number.isSafeInteger(parsed.e)
       || (parsed.e as number) <= now
-      || (parsed.p !== undefined && !['challenge', 'grant', 'session'].includes(String(parsed.p)))
+      || (parsed.p !== undefined && (typeof parsed.p !== 'string' || !['challenge', 'grant', 'session'].includes(parsed.p)))
       || (parsed.b !== undefined && (typeof parsed.b !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(parsed.b)))
       || (parsed.g !== undefined && (typeof parsed.g !== 'string' || !/^[a-f0-9]{32}$/.test(parsed.g)))
     ) {

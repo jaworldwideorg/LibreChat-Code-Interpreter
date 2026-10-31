@@ -30,6 +30,7 @@ export function sendHostedAppPreviewViewer(req: Request, res: Response, runtimeI
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Origin-Agent-Cluster', '?1');
   res.setHeader('Content-Security-Policy', `default-src 'none'; frame-src ${app.origin}; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; frame-ancestors ${parent}; base-uri 'none'; form-action 'none'`);
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
   return res.status(200).type('html').send(`<!doctype html><html><head><meta charset="utf-8"><title>App preview</title>
@@ -38,13 +39,15 @@ export function sendHostedAppPreviewViewer(req: Request, res: Response, runtimeI
 <script nonce="${nonce}">
 const parentOrigin=${JSON.stringify(parent)},appOrigin=${JSON.stringify(app.origin)},channel=${JSON.stringify(channel)},runtimeId=${JSON.stringify(runtimeId)};
 const frame=document.querySelector('iframe');
+let challengeForwarded=false,authorized=false;
 window.addEventListener('message',event=>{
  const value=event.data;if(!value||typeof value!=='object')return;
- if(event.source===frame.contentWindow&&event.origin===appOrigin&&value.type==='codeapi.preview.challenge'&&typeof value.challenge==='string'){
+ if(!challengeForwarded&&!authorized&&event.source===frame.contentWindow&&event.origin===appOrigin&&value.type==='codeapi.preview.challenge'&&typeof value.challenge==='string'&&value.challenge.length<=1024){
+  challengeForwarded=true;
   window.parent.postMessage({type:value.type,channel,runtimeId,challenge:value.challenge},parentOrigin);return;
  }
- if(event.source!==window.parent||event.origin!==parentOrigin||value.type!=='codeapi.preview.authorize'||value.channel!==channel||typeof value.authorizationUrl!=='string')return;
- try{const url=new URL(value.authorizationUrl);if(url.origin!==appOrigin||url.pathname!=='/__codeapi/authorize')return;frame.src=url.href;}catch{}
+ if(!challengeForwarded||authorized||event.source!==window.parent||event.origin!==parentOrigin||value.type!=='codeapi.preview.authorize'||value.channel!==channel||typeof value.authorizationUrl!=='string'||value.authorizationUrl.length>2048)return;
+ try{const url=new URL(value.authorizationUrl);if(url.origin!==appOrigin||url.pathname!=='/__codeapi/authorize')return;authorized=true;frame.src=url.href;}catch{}
 });
 frame.src=appOrigin+'/__codeapi/challenge';
 </script></body></html>`);

@@ -36,6 +36,11 @@ LibreChat. `CODEAPI_HOSTED_APP_PARENT_ORIGIN` must be the exact HTTPS origin
 (`https://oneja.ai` in this deployment), with no path, query or credentials.
 The parent checks `event.origin`, `event.source`, channel and runtime ID before
 authorizing. The viewer checks both parent and child origins/window identities.
+It forwards only one bounded challenge and accepts one authorization per opening;
+app code cannot drive the privileged broker after the initial handoff. Opening
+retry requires a fresh viewer/channel. Close the viewer and remove listeners
+on logout, account change and canceled opening; reject stale async authorization
+results belonging to a prior user/channel.
 Authorization URLs must use the exact per-app origin and authorize path.
 
 The authenticated grant endpoint receives:
@@ -65,7 +70,8 @@ records, logs, analytics or Git; keep them in the live handoff only.
 The trusted viewer loads only its exact per-app origin. The app iframe and app
 responses apply `sandbox allow-scripts allow-forms allow-same-origin`; the app
 and viewer are different origins, so same-origin scripting does not grant
-access to the viewer or LibreChat DOM. Popup/top navigation privileges are not
+access to the viewer or LibreChat DOM. Origin-Agent-Cluster prevents domain
+relaxation of the app/viewer origins. Popup/top navigation privileges are not
 granted. Workers, child frames, external browser fetches and arbitrary upstream
 cookie/security headers remain blocked by the existing proxy policy. Trusted
 parent/viewer ancestors are explicitly allowed for the nested iframe. Both

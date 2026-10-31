@@ -20,6 +20,7 @@ export function applyHostedAppPreviewSecurityHeaders(
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('X-DNS-Prefetch-Control', 'off');
   response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  response.setHeader('Origin-Agent-Cluster', '?1');
   /* The app origin and browser cache outlive an individual capability and app
    * revision. User-controlled caching could otherwise replay old HTML/JS after
    * the revision-bound cookie has expired or a replacement has landed. */
