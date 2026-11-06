@@ -33,6 +33,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  server.closeAllConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await fsp.rm(packageDir, { recursive: true, force: true });
 });
@@ -116,6 +117,7 @@ describe('checkpoint/restore session binding', () => {
     expect(bindSessionWorkspace({ runtimeSessionId: 'rt_same' })).toBeDefined();
 
     const response = await checkpoint({ 'X-Runtime-Session-Id': 'rt_same' });
+    await response.arrayBuffer();
     /* Whatever the handler then does, it must not be rejected by the gate. */
     expect(response.status).not.toBe(409);
     expect(response.status).not.toBe(400);
