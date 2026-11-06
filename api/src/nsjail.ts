@@ -193,6 +193,14 @@ const SECCOMP_POLICY = [
   'USE sandbox DEFAULT ALLOW',
 ].filter(line => line !== '').join('\n');
 
+export function publicWebSeccompPolicy(): string {
+  return SECCOMP_POLICY.replace(
+    '    socket(domain) { domain != AF_VSOCK },',
+    '    socket(domain, type, protocol) { domain != AF_VSOCK && (domain != AF_INET || ((type & 15) != 1 && (type & 15) != 2) || (protocol != 0 && protocol != 6 && protocol != 17)) },\n    bind, listen, accept, accept4,'
+  );
+}
+
+
 export { SIGNALS };
 
 /* Base sandbox.cfg cached at module load. Per-job runs append a dynamic
@@ -246,6 +254,7 @@ interface ExecuteOptions {
   extraPkgdirs?: string[];
   identity: SandboxJobIdentity;
   enableToolCallPipes?: boolean;
+  publicWebResolverFile?: string;
   suppressSuccessLogs?: boolean;
 }
 
@@ -262,6 +271,7 @@ export async function execute(opts: ExecuteOptions, setupGate: NsJailSetupGate =
     extraPkgdirs,
     identity,
     enableToolCallPipes,
+    publicWebResolverFile,
     suppressSuccessLogs,
   } = opts;
   const logId = nanoid();
@@ -281,6 +291,7 @@ export async function execute(opts: ExecuteOptions, setupGate: NsJailSetupGate =
     extraPkgdirs,
     identity,
     enableToolCallPipes,
+    publicWebResolverFile,
   });
 
   const startTime = Date.now();
@@ -667,6 +678,7 @@ interface BuildArgsOptions {
   extraPkgdirs?: string[];
   identity: SandboxJobIdentity;
   enableToolCallPipes?: boolean;
+  publicWebResolverFile?: string;
 }
 
 export function buildArgs(opts: BuildArgsOptions): string[] {
@@ -681,6 +693,7 @@ export function buildArgs(opts: BuildArgsOptions): string[] {
     extraPkgdirs,
     identity,
     enableToolCallPipes,
+    publicWebResolverFile,
   } = opts;
 
   const timeoutSecs = Math.max(1, Math.ceil(timeout / 1000));
@@ -688,7 +701,7 @@ export function buildArgs(opts: BuildArgsOptions): string[] {
   const args: string[] = [
     '--config', cfgPath ?? config.nsjail_config,
     '--log', logPath,
-    '--seccomp_string', SECCOMP_POLICY,
+    '--seccomp_string', publicWebResolverFile ? publicWebSeccompPolicy() : SECCOMP_POLICY,
     '--user', `${SANDBOX_INSIDE_UID}:${identity.uid}:1`,
     '--group', `${SANDBOX_INSIDE_GID}:${identity.gid}:1`,
     '-s', '/usr/bin:/bin',
@@ -696,6 +709,11 @@ export function buildArgs(opts: BuildArgsOptions): string[] {
     '-s', '/usr/lib64:/lib64',
     '-R', `${pkgdir}:${pkgdir}`,
   ];
+
+  if (publicWebResolverFile) {
+    if (config.network_mode !== 'public-web') throw new Error('Public web runner mode mismatch');
+    args.push('--disable_clone_newnet', '-R', `${publicWebResolverFile}:/etc/resolv.conf`);
+  }
 
   if (config.use_cgroupv2) {
     args.push('--use_cgroupv2');

@@ -1,0 +1,53 @@
+name: Public web isolation
+on:
+  pull_request:
+  push:
+    branches: ['codex/sandbox-public-web']
+    tags: ['ja-*']
+permissions:
+  contents: read
+concurrency:
+  group: public-web-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+        working-directory: service
+      - run: bunx tsc --noEmit -p tsconfig.esm.json
+        working-directory: service
+      - run: bun install --frozen-lockfile
+        working-directory: api
+      - run: bun test src/public-web.test.ts src/nsjail.test.ts
+        working-directory: api
+      - run: bun run build
+        working-directory: api
+      - name: Real Redis accounting
+        run: |
+          docker run -d --name public-web-redis -p 127.0.0.1:6388:6379 redis:8-alpine
+          for attempt in $(seq 1 30); do
+            if docker exec public-web-redis redis-cli ping; then break; fi
+            sleep 1
+          done
+          cd service
+          bun test tests/public-web.test.ts
+      - name: Build native policy and transport
+        run: docker build --target nsjail-ipc-test -f api/Dockerfile -t public-web-native .
+      - name: Unchanged clients under compiled Linux filters
+        run: |
+          docker network create public-web-test
+          docker network connect public-web-test public-web-redis
+          docker run --rm --privileged --network public-web-test \
+            -e REDIS_HOST=public-web-redis -v "$PWD:/work" -w /work \
+            public-web-native /usr/local/bin/sandbox-supervisor-policy \
+            /usr/local/bin/bun tests/public_web_native.ts

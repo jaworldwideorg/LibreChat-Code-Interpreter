@@ -23,6 +23,7 @@ export interface EgressLedgerRecord {
   max_upload_bytes: number;
   max_output_files: number;
   max_requests: number;
+  network?: EgressGrantClaims['network'];
   request_count: number;
   read_count: number;
   upload_count: number;
@@ -96,6 +97,7 @@ function recordFromGrant(grant: EgressGrantClaims): EgressLedgerRecord {
     max_upload_bytes: grant.max_upload_bytes,
     max_output_files: grant.max_output_files,
     max_requests: grant.max_requests,
+    ...(grant.network ? { network: grant.network } : {}),
     request_count: 0,
     read_count: 0,
     upload_count: 0,
@@ -180,4 +182,15 @@ export async function recordEgressToolCall(grantId: string | undefined, executio
 export async function revokeEgressLedger(grantId: string, reason: string): Promise<void> {
   if (!env.EGRESS_LEDGER_REQUIRED) return;
   await executeLedger('revoke', grantId, '', [reason]);
+}
+
+/** Network operations share the same one-key transaction as revocation. */
+export async function recordPublicWeb(grant: EgressGrantClaims,
+  operation: 'open' | 'close' | 'renew' | 'bytes' | 'dns', connection: string, bytes: number): Promise<void> {
+  if (!env.EGRESS_LEDGER_REQUIRED) throw new EgressGrantError('scope_mismatch', 'Public web requires durable grant ledger');
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > 65536
+    || (operation !== 'dns' && !/^[a-zA-Z0-9-]{1,64}$/.test(connection))) {
+    throw new EgressGrantError('malformed', 'Invalid public web accounting');
+  }
+  await executeLedger('network-' + operation, grant.grant_id, grant.exec_id, [connection, bytes]);
 }

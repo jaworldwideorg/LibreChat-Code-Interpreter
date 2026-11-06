@@ -1,3 +1,4 @@
+import { installPublicWebGateway } from './public-egress-gateway';
 import crypto from 'crypto';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { nanoid } from 'nanoid';
@@ -65,6 +66,7 @@ type EgressAuditFields = {
 function routeFamily(req: Request): string {
   if (req.path === '/live' || req.path === '/health' || req.path === '/ready' || req.path === '/metrics') return req.path.slice(1);
   if (req.path.startsWith('/internal/')) return 'internal';
+  if (req.path.startsWith('/network/')) return 'public-web';
   if (req.path === '/tool-call') return 'ptc-tool-call';
   if (req.path.startsWith('/sessions/')) {
     if (req.method === 'PUT') return 'file-upload';
@@ -866,6 +868,8 @@ app.post('/tool-call', async (req, res) => {
   }
 });
 
+const publicWeb = installPublicWebGateway(app, { relayUrl: env.PUBLIC_EGRESS_RELAY_URL, secret: env.EGRESS_GRANT_SECRET });
+
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
@@ -886,6 +890,7 @@ function closeHttpServer(): Promise<void> {
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  publicWeb.close();
   logger.info('Shutting down egress gateway...');
   try {
     await closeHttpServer();
@@ -910,6 +915,8 @@ if (process.env.CODEAPI_EGRESS_GATEWAY_AUTOSTART !== 'false') {
   server = app.listen(env.EGRESS_GATEWAY_PORT, () => {
     logger.info(`Egress gateway listening on port ${env.EGRESS_GATEWAY_PORT}`);
   });
+
+  publicWeb.attach(server);
 
   process.on('SIGTERM', () => void shutdown());
   process.on('SIGINT', () => void shutdown());

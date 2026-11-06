@@ -28,6 +28,8 @@ jobs:
           bunx tsc --noEmit -p tsconfig.esm.json
           bun test ./src/*.test.ts ./src/*.spec.ts ./src/**/*.test.ts ./src/**/*.spec.ts
           bun run test:ptc
+          sudo service redis-server start
+          PUBLIC_WEB_TEST_REDIS_PORT=6379 bun test tests/public-web.test.ts
   publish:
     needs: verify
     if: github.ref_type == 'tag'
@@ -51,14 +53,14 @@ jobs:
           set -euo pipefail
           [[ "$RELEASE_VERSION" =~ ^ja-[0-9]{4}\.[0-9]{1,2}\.[0-9]+$ ]]
           registry=467816190573.dkr.ecr.eu-central-1.amazonaws.com
-          for component in api worker file-server tool-call-server egress-gateway; do
+          for component in api worker file-server tool-call-server egress-gateway public-egress-relay; do
             dockerfile=service/Dockerfile.$component
             if [ "$component" = file-server ]; then dockerfile=service/Dockerfile; fi
             image="$registry/oneja/codeapi/$component:$RELEASE_VERSION"
             docker build --platform linux/amd64 --target production -f "$dockerfile" --label org.opencontainers.image.version="$RELEASE_VERSION" --label org.opencontainers.image.revision="$GITHUB_SHA" -t "$image" .
             docker push "$image"
           done
-          printf '{"version":"%s","revision":"%s","components":["api","worker","file-server","tool-call-server","egress-gateway"]}\n' "$RELEASE_VERSION" "$GITHUB_SHA" > release.json
+          printf '{"version":"%s","revision":"%s","components":["api","worker","file-server","tool-call-server","egress-gateway","public-egress-relay"]}\n' "$RELEASE_VERSION" "$GITHUB_SHA" > release.json
       - uses: actions/upload-artifact@v7
         with:
           name: aws-release

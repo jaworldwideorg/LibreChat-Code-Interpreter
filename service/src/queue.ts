@@ -83,8 +83,8 @@ function getQueueResources(
   const existing = queueResources.get(name);
   if (existing != null) return existing;
 
-  const queue = new Queue<t.JobData, t.JobResult, Jobs.execute>(name, { connection });
-  const events = new QueueEvents(name, { connection });
+  const queue = new Queue<t.JobData, t.JobResult, Jobs.execute>(name, { connection, prefix: env.QUEUE_PREFIX });
+  const events = new QueueEvents(name, { connection, prefix: env.QUEUE_PREFIX });
   setMaxListeners(0, queue, events);
   const resources = { queue, events };
   queueResources.set(name, resources);
