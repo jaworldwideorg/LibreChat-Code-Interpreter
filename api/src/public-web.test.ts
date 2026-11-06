@@ -50,3 +50,14 @@ test('partial installation and missing IPv6 support reject admission', async () 
   expect(calls.some(c => c.includes('ACCEPT'))).toBe(false);
   expect(calls.filter(c => c.includes('-X'))).toHaveLength(3);
 });
+
+test('legacy IPv6 owner match still protects every UID when ranges are unsupported', async () => {
+  const protectedUids: string[] = [];
+  await initializePublicWebFirewall(200000, 3, async (binary, args) => {
+    if (!binary.includes('ip6tables')) return;
+    const uid = args[args.indexOf('--uid-owner') + 1];
+    if (uid.includes('-')) throw new Error('Unsupported owner range');
+    protectedUids.push(uid);
+  });
+  expect(protectedUids).toEqual(['200000', '200001', '200002']);
+});

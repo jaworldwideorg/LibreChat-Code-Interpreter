@@ -29,7 +29,15 @@ export async function initializePublicWebFirewall(uidBase: number, uidCount: num
   // missing per-UID rule cannot expose the VM network after namespace escape.
   const range = `${uidBase}-${uidBase + uidCount - 1}`;
   for (const binary of [V4, V6]) {
-    await ensure(binary, ['-t', 'filter', '-C', 'OUTPUT', '-m', 'owner', '--uid-owner', range, '-j', 'REJECT'], command);
+    try {
+      await ensure(binary, ['-t', 'filter', '-C', 'OUTPUT', '-m', 'owner', '--uid-owner', range, '-j', 'REJECT'], command);
+    } catch {
+      // Some legacy IPv6 owner-match revisions accept individual UIDs but
+      // reject ranges. Install complete coverage, never an allow fallback.
+      for (let slot = 0; slot < uidCount; slot++) {
+        await ensure(binary, ['-t', 'filter', '-C', 'OUTPUT', '-m', 'owner', '--uid-owner', String(uidBase + slot), '-j', 'REJECT'], command);
+      }
+    }
   }
 }
 
