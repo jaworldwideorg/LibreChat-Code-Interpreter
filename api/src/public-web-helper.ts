@@ -85,6 +85,8 @@ export async function startPublicWebHelper(options: {
   let recovered = false;
   let activeDns = 0;
   let dnsAttempts = 0;
+  let connectionAttempts = 0;
+  let activeConnections = 0;
   const unclaimedDescriptors = new Set<number>();
   async function answer(packet: Buffer): Promise<Buffer> {
     const query = parseDnsQuestion(packet);
@@ -151,6 +153,18 @@ export async function startPublicWebHelper(options: {
         recovered = original.ip === '93.184.216.34' && original.port === 443;
         socket.end(); return;
       }
+      // Count private/rejected destinations and pending gateway handshakes
+      // too. Stop listening when the local attempt budget is exhausted, so
+      // repeated denied connections cannot keep consuming helper work.
+      connectionAttempts++;
+      if (connectionAttempts >= options.network.max_attempts) {
+        for (const server of proxies) if (server.listening) server.close();
+      }
+      if (connectionAttempts > options.network.max_attempts || activeConnections >= options.network.max_connections) {
+        socket.destroy(); return;
+      }
+      activeConnections++;
+      socket.once('close', () => { activeConnections--; });
       const destination = validateWebDestination(original);
       const url = new URL('/network/tunnel', gateway); url.protocol = gateway.protocol === 'https:' ? 'wss:' : 'ws:';
       const peer = new WebSocket(url, { headers: { 'X-CodeAPI-Egress-Grant': options.grant },

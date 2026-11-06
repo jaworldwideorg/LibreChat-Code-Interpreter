@@ -187,6 +187,26 @@ for _ in range(5):
  except OSError: pass
 assert successes==3, successes
 print('attempt-limit-public-web-ok')`], { max_attempts: 3 });
+  await runLanguage(1, ['private-attempt-limit', ['/usr/bin/python3', '/mnt/data/main.py'], `import urllib.request
+for _ in range(3):
+ try: urllib.request.urlopen('http://127.0.0.1',timeout=2).read()
+ except OSError: pass
+ else: raise AssertionError('private request succeeded')
+try: urllib.request.urlopen('http://93.184.216.34/proof',timeout=2).read()
+except OSError: pass
+else: raise AssertionError('denied attempts bypassed the budget')
+print('private-attempt-limit-public-web-ok')`], { max_attempts: 3 });
+  await runLanguage(1, ['connection-limit', ['/usr/bin/python3', '/mnt/data/main.py'], `import urllib.request,socket,time
+first=socket.socket();first.connect(('93.184.216.34',80));first.sendall(b'GET /idle HTTP/1.1\\r\\nHost: public.example\\r\\nConnection: close\\r\\n\\r\\n')
+try: urllib.request.urlopen('http://93.184.216.34/proof',timeout=2).read()
+except OSError: pass
+else: raise AssertionError('simultaneous connection limit bypassed')
+first.close()
+for _ in range(20):
+ try: assert urllib.request.urlopen('http://93.184.216.34/proof',timeout=2).read();break
+ except OSError: time.sleep(.05)
+else: raise AssertionError('connection capacity did not recover')
+print('connection-limit-public-web-ok')`], { max_connections: 1 });
   await runLanguage(1, ['byte-limit', ['/usr/bin/python3', '/mnt/data/main.py'], `import urllib.request
 try: urllib.request.urlopen('http://93.184.216.34/proof',timeout=2).read()
 except OSError: pass
