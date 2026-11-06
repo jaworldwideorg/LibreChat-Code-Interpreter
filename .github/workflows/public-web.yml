@@ -28,6 +28,13 @@ jobs:
         working-directory: service
       - run: bun install --frozen-lockfile
         working-directory: api
+      - name: Build host anonymous pipe addon
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libnode-dev
+          mkdir -p api/.build
+          cc -shared -fPIC -O2 -Wall -Wextra -Werror -I/usr/include/node \
+            -o api/.build/anonymous-pipes.node api/src/anonymous-pipes.c
       - run: bun test src/public-web.test.ts src/nsjail.test.ts
         working-directory: api
       - run: bun run build
