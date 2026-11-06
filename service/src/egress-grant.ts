@@ -1,3 +1,4 @@
+import { validatePublicWeb, type PublicWebCapability } from '../../shared/public-web';
 import crypto from 'crypto';
 import type { ExecutionManifestClaims, ExecutionManifestInputFile } from './execution-manifest';
 import type * as t from './types';
@@ -38,6 +39,7 @@ export interface EgressGrantClaims {
   typ: 'grant';
   grant_id: string;
   legacy_grant?: true;
+  network?: PublicWebCapability;
   exec_id: string;
   tenant_id: string;
   user_id: string;
@@ -238,6 +240,7 @@ function validateGrant(value: unknown, token: string): EgressGrantClaims {
       throw new EgressGrantError('malformed', `Egress ${field} is invalid`);
     }
   }
+  try { validatePublicWeb(claims.network); } catch { throw new EgressGrantError('malformed', 'Invalid network grant'); }
   return claims as EgressGrantClaims;
 }
 
@@ -300,6 +303,7 @@ export function sealEgressGrant(claims: Omit<EgressGrantClaims, 'v' | 'typ'>, se
     max_upload_bytes: claims.max_upload_bytes,
     max_output_files: claims.max_output_files,
     max_requests: claims.max_requests,
+    ...(claims.network ? { network: claims.network } : {}),
     iat: claims.iat,
     exp: claims.exp,
     ...(claims.external_user_id ? { external_user_id: claims.external_user_id } : {}),
@@ -335,6 +339,7 @@ export function egressGrantFromExecutionClaims(claims: ExecutionManifestClaims, 
     max_upload_bytes: claims.max_upload_bytes,
     max_output_files: claims.max_output_files,
     max_requests: claims.max_requests,
+    ...(claims.network ? { network: claims.network } : {}),
     iat: claims.iat,
     exp: claims.exp,
     ...(claims.external_user_id ? { external_user_id: claims.external_user_id } : {}),

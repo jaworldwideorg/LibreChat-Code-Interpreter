@@ -1,3 +1,4 @@
+import { publicWebMode } from '../../shared/public-web';
 type LimitOverrides = Record<string, Record<string, number> | undefined>;
 
 function parseLimitOverrides(raw: string): LimitOverrides {
@@ -50,6 +51,7 @@ export const config = {
   packages_directory: cleanDirectory(process.env.SANDBOX_PACKAGES_DIRECTORY)
     ?? legacyPackagesDirectory(process.env.SANDBOX_DATA_DIRECTORY)
     ?? '/pkgs',
+  network_mode: publicWebMode(process.env.SANDBOX_NETWORK_MODE),
   disable_networking: (process.env.SANDBOX_DISABLE_NETWORKING ?? 'true') === 'true',
   use_cgroupv2: (process.env.SANDBOX_USE_CGROUPV2 ?? 'true') === 'true',
   allowed_local_network_port: Number(process.env.SANDBOX_ALLOWED_LOCAL_NETWORK_PORT ?? 0),

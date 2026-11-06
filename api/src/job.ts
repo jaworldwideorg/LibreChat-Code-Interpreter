@@ -1,3 +1,5 @@
+import { createPublicWebLease, PublicWebCleanupError, type PublicWebLease } from './public-web-lease';
+import type { PublicWebCapability } from '../../shared/public-web';
 import * as fs from 'fs';
 import * as path from 'path';
 import { nanoid } from 'nanoid';
@@ -736,6 +738,9 @@ export class Job {
    * one long-lived workspace + pinned UID across calls instead of a fresh
    * per-job workspace; undefined = legacy fresh-per-job path (unchanged). */
   private readonly session: SessionWorkspace | undefined;
+  private network?: PublicWebCapability;
+  private networkLease?: PublicWebLease;
+  private networkCleanupFailed = false;
 
   constructor(opts: {
     /** Top-level execution session id. Becomes `Job.uuid` and is the id
@@ -752,6 +757,7 @@ export class Job {
     extra_env_vars?: Record<string, string>;
     output_session_id?: string;
     egress_grant?: string;
+    network?: PublicWebCapability;
     tool_call_socket_enabled?: boolean;
     is_synthetic?: boolean;
     /* Injected when this VM is bound to a stateful runtime session. */
@@ -789,6 +795,7 @@ export class Job {
     this.memory_limits = opts.memory_limits;
     this.extra_env_vars = opts.extra_env_vars;
     this.egressGrantToken = opts.egress_grant;
+    this.network = opts.network;
     this.toolCallPipesEnabled = opts.tool_call_socket_enabled === true;
     this.isSynthetic = opts.is_synthetic === true;
   }
@@ -1636,7 +1643,17 @@ export class Job {
       ensureNodeModulesSymlink(this.submissionDir, linkTarget.nodeModulesPath);
     }
 
+    if (this.network) {
+      try { this.networkLease ??= await createPublicWebLease(this.sandboxIdentity(), this.network, this.egressGrantToken ?? ''); }
+      catch (error) {
+        if (error instanceof PublicWebCleanupError) this.networkCleanupFailed = true;
+        throw error;
+      }
+      this.networkLease.assertHealthy();
+    }
     return execute({
+      publicWebResolverFile: this.networkLease?.resolverFile,
+      publicWebNamespacePath: this.networkLease?.namespacePath,
       command,
       envVars,
       submissionDir: this.submissionDir,
@@ -2720,6 +2737,13 @@ export class Job {
       this.log.info('Cleaning up');
     }
 
+    if (this.networkLease) {
+      try { await this.networkLease.close(); } catch (error) {
+        this.networkCleanupFailed = true;
+        this.log.error('Public web identity quarantined after cleanup failure');
+      }
+      this.networkLease = undefined;
+    }
     let outcome: 'removed' | 'preserved' | 'retained' | 'error' = 'error';
     try {
       /* Session mode: the workspace and pinned UID belong to the long-lived
@@ -2749,7 +2773,7 @@ export class Job {
         }
       }
 
-      if (jobIdentity) {
+      if (jobIdentity && !this.networkCleanupFailed) {
         if (!workspaceLease || workspaceRemoved) {
           releaseJobIdentity(jobIdentity);
         } else {

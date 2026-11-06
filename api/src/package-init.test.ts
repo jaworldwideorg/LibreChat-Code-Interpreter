@@ -74,6 +74,12 @@ for (const oldRuntimeExists of [false, true]) {
                 'chdb',
                 'statsmodels',
                 'rasterio',
+                'pypdf',
+                'pymupdf',
+                'weasyprint',
+                'csvkit',
+                'extract_msg',
+                'ebooklib',
             ]) {
                 fs.mkdirSync(
                     path.join(python, 'lib/python3.14/site-packages', name),

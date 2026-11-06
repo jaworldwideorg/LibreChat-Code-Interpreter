@@ -195,8 +195,16 @@ if [ "$SANDBOX_USE_CGROUPV2" = "true" ]; then
     NSJAIL_CGROUP_ARGS=(--use_cgroupv2)
 fi
 
-if timeout 10 /usr/local/bin/sandbox-supervisor-policy "${NSJAIL_PATH:-/usr/sbin/nsjail}" --config "${NSJAIL_CONFIG:-/sandbox_api/config/sandbox.cfg}" \
+SMOKE_TIME_LIMIT_SECONDS="${SANDBOX_SMOKE_TIMEOUT_SECONDS:-60}"
+if ! [[ "$SMOKE_TIME_LIMIT_SECONDS" =~ ^[1-9][0-9]{0,2}$ ]] || [ "$SMOKE_TIME_LIMIT_SECONDS" -gt 120 ]; then
+    echo "FATAL: SANDBOX_SMOKE_TIMEOUT_SECONDS must be an integer between 1 and 120" >&2
+    exit 1
+fi
+SMOKE_WALL_TIMEOUT_SECONDS=$((SMOKE_TIME_LIMIT_SECONDS + 10))
+
+if timeout "$SMOKE_WALL_TIMEOUT_SECONDS" /usr/local/bin/sandbox-supervisor-policy "${NSJAIL_PATH:-/usr/sbin/nsjail}" --config "${NSJAIL_CONFIG:-/sandbox_api/config/sandbox.cfg}" \
     "${NSJAIL_CGROUP_ARGS[@]}" --log "$SMOKE_LOG" \
+    --time_limit "$SMOKE_TIME_LIMIT_SECONDS" \
     --user "65534:${SMOKE_OUTSIDE_UID}:1" --group "65534:${SMOKE_OUTSIDE_GID}:1" \
     -s /usr/bin:/bin -s /usr/lib:/lib -s /usr/lib64:/lib64 \
     -B "$SMOKE_DIR:/mnt/data" \

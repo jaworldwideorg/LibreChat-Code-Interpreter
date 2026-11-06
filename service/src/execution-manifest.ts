@@ -1,3 +1,4 @@
+import { validatePublicWeb, type PublicWebCapability } from '../../shared/public-web';
 import crypto from 'crypto';
 
 export const EXECUTION_MANIFEST_HEADER = 'X-CodeAPI-Execution-Manifest';
@@ -73,6 +74,7 @@ export interface ExecutionManifestClaims {
   exp: number;
   execute_body_sha256?: string;
   tool_call_socket?: boolean;
+  network?: PublicWebCapability;
   external_user_id?: string;
   org_id?: string;
   service_id?: string;
@@ -217,6 +219,9 @@ function validateClaimsShape(value: unknown): asserts value is ExecutionManifest
   }
   if (claims.tool_call_socket !== undefined && typeof claims.tool_call_socket !== 'boolean') {
     throw new ExecutionManifestError('malformed', 'Execution manifest tool_call_socket is invalid');
+  }
+  try { validatePublicWeb(claims.network); } catch {
+    throw new ExecutionManifestError('malformed', 'Execution manifest network is invalid');
   }
   for (const file of claims.input_files) {
     if (

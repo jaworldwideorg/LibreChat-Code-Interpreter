@@ -18,6 +18,7 @@ if op == 'create' then
       'max_requests', policy.max_requests, 'max_upload_bytes', policy.max_upload_bytes,
       'max_output_files', policy.max_output_files,
       'request_count', 0, 'read_count', 0, 'upload_count', 0, 'tool_call_count', 0, 'uploaded_bytes', 0)
+    if policy.network then redis.call('HSET', key, 'network_policy', cjson.encode(policy.network)) end
   else
     redis.call('SET', key, ARGV[4])
   end
@@ -83,6 +84,50 @@ if op == 'snapshot' then
     end
   end
   return {'ok', encodeRecord(record)}
+end
+if string.sub(op, 1, 8) == 'network-' then
+  local encoded = compact and get('network_policy') or nil
+  local limits = compact and encoded and cjson.decode(encoded) or (not compact and record.network) or nil
+  if not limits or limits.mode ~= 'public-web' or limits.policy_version ~= 1 then return denied('Public web not authorized') end
+  local connection = 'network:' .. ARGV[4]
+  local active = 0
+  if compact then
+    for _, field in ipairs(redis.call('HKEYS', key)) do
+      if string.sub(field, 1, 8) == 'network:' then
+        if tonumber(get(field)) <= now then redis.call('HDEL', key, field) else active = active + 1 end
+      end
+    end
+  else
+    for field, expiry in pairs(record) do
+      if string.sub(field, 1, 8) == 'network:' then
+        if expiry <= now then record[field] = nil else active = active + 1 end
+      end
+    end
+  end
+  if op == 'network-open' then
+    local attempts = number('network_attempts') or 0
+    if attempts >= limits.max_attempts then return denied('Network attempt budget exceeded') end
+    put('network_attempts', attempts + 1)
+    if active >= limits.max_connections or get(connection) then save() return denied('Network concurrency budget exceeded') end
+    put(connection, now + 5)
+  elseif op == 'network-close' then
+    if compact then redis.call('HDEL', key, connection) else record[connection] = nil end
+  elseif op == 'network-dns' then
+    local queries = number('network_queries') or 0
+    if queries >= limits.max_attempts then return denied('DNS query budget exceeded') end
+    put('network_queries', queries + 1)
+  elseif op == 'network-renew' or op == 'network-bytes' then
+    if not get(connection) then return denied('Network connection lease expired') end
+    if op == 'network-bytes' then
+      local bytes = tonumber(ARGV[5])
+      local used = number('network_bytes') or 0
+      if not bytes or bytes < 0 or bytes > 65536 or used + bytes > limits.max_bytes then return denied('Network byte budget exceeded') end
+      put('network_bytes', used + bytes)
+    end
+    put(connection, now + 5)
+  else return denied('Unknown network operation') end
+  save()
+  return {'ok'}
 end
 local file = ARGV[4]
 local bytes = tonumber(ARGV[5])

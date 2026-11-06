@@ -1,3 +1,4 @@
+import { DEFAULT_PUBLIC_WEB } from '../../shared/public-web';
 import { env } from './config';
 import type * as t from './types';
 import { buildExecutionIdentity } from './execution-identity';
@@ -85,8 +86,11 @@ export function buildExecutionManifestClaims(args: {
     max_output_files: env.EXECUTION_MANIFEST_MAX_OUTPUT_FILES,
     max_requests: env.EXECUTION_MANIFEST_MAX_REQUESTS,
     iat: now,
-    exp: now + env.EXECUTION_MANIFEST_TTL_SECONDS,
+    exp: now + (env.NETWORK_MODE === 'public-web'
+      ? Math.min(env.EGRESS_GRANT_TTL_SECONDS, Math.max(env.EXECUTION_MANIFEST_TTL_SECONDS, Math.ceil(env.JOB_TIMEOUT / 1000)))
+      : env.EXECUTION_MANIFEST_TTL_SECONDS),
     tool_call_socket: args.payload.tool_call_socket === true,
+    ...(env.NETWORK_MODE === 'public-web' ? { network: { ...DEFAULT_PUBLIC_WEB } } : {}),
     ...(identity.externalUserId ? { external_user_id: identity.externalUserId } : {}),
     ...(identity.orgId ? { org_id: identity.orgId } : {}),
     ...(identity.serviceId ? { service_id: identity.serviceId } : {}),

@@ -34,18 +34,51 @@ RUN git apply /tmp/nsjail-anonymous-control.patch && make -j$(nproc) NL3_EXISTS=
 COPY api/src/spec-guard.c /tmp/spec-guard.c
 COPY api/src/tool-call-pipe-bridge.c /tmp/tool-call-pipe-bridge.c
 COPY api/src/anonymous-pipes.c /tmp/anonymous-pipes.c
+COPY api/src/public-web-namespace.h /tmp/public-web-namespace.h
+COPY api/src/public-web-namespace-enter.c /tmp/public-web-namespace-enter.c
 COPY api/src/supervisor-policy.c /tmp/supervisor-policy.c
 COPY --from=node:22.23.4-slim /usr/local/include/node /usr/local/include/node
 COPY docker/rootfs-setup.c /tmp/rootfs-setup.c
 RUN gcc -shared -fPIC -O2 -Wall -Wextra -Werror -I/usr/local/include/node -o /usr/local/lib/anonymous-pipes.node /tmp/anonymous-pipes.c \
+    && gcc -O2 -static -Wall -Wextra -Werror -o /usr/local/bin/public-web-namespace-enter /tmp/public-web-namespace-enter.c \
     && gcc -O2 -static -Wall -Wextra -Werror -o /usr/local/bin/sandbox-supervisor-policy /tmp/supervisor-policy.c \
     && gcc -O2 -static -Wall -Wextra -Werror -o /usr/local/bin/tool-call-pipe-bridge /tmp/tool-call-pipe-bridge.c \
     && gcc -O2 -static -Wall -Wextra -Werror -o /usr/local/bin/spec-guard /tmp/spec-guard.c \
     && gcc -O2 -static -Wall -Wextra -Werror -o /usr/local/bin/sandbox-rootfs-setup /tmp/rootfs-setup.c \
     && chmod 0111 /usr/local/bin/spec-guard /usr/local/bin/sandbox-rootfs-setup
 
+# Preserve Debian security backports while avoiding libcurl's socketpair-based
+# threaded DNS transport. Synchronous libc DNS uses the per-job local resolver.
+# Pin the canonicalizer used by signed Bash tool inputs; Debian's jq 1.6
+# formats exponent/raw-number inputs differently from the server contract.
+FROM buildpack-deps:bookworm AS jq-builder
+RUN case "$(uname -m)" in \
+      aarch64) jq_arch=arm64; jq_sha=8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309 ;; \
+      x86_64) jq_arch=amd64; jq_sha=b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f ;; \
+      *) exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-${jq_arch}" -o /tmp/jq \
+    && echo "${jq_sha}  /tmp/jq" | sha256sum -c - \
+    && chmod 0555 /tmp/jq
+
+FROM buildpack-deps:bookworm AS pipe-curl-builder
+WORKDIR /curl-build
+RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get source curl \
+    && cd curl-* \
+    && ./configure --prefix=/opt/codeapi-curl --disable-shared --enable-static \
+        --disable-threaded-resolver --disable-ares --with-openssl \
+        --without-libpsl --without-libidn2 --without-libssh2 --without-nghttp2 \
+        --without-brotli --without-zstd \
+    && make -j2 \
+    && make install
+
 # Native policy/transport verification without building the full runner.
 FROM nsjail-builder AS nsjail-ipc-test
+COPY --from=jq-builder /tmp/jq /usr/bin/jq
+COPY --from=pipe-curl-builder /opt/codeapi-curl/bin/curl /usr/local/bin/curl
+RUN apt-get update && apt-get install -y --no-install-recommends python3-requests strace && rm -rf /var/lib/apt/lists/*
 ENV SANDBOX_PIPE_ADDON=/usr/local/lib/anonymous-pipes.node
 COPY docker/python-runtime /python-runtime
 RUN python3 /python-runtime/install.py
@@ -208,9 +241,12 @@ RUN sed -i -E \
        done
 
 COPY --from=nsjail-builder /nsjail/nsjail /usr/sbin/nsjail
+COPY --from=jq-builder /tmp/jq /usr/bin/jq
+COPY --from=pipe-curl-builder /opt/codeapi-curl/bin/curl /usr/local/bin/curl
 COPY --from=nsjail-builder /usr/local/bin/spec-guard /usr/local/bin/spec-guard
 COPY --from=nsjail-builder /usr/local/bin/tool-call-pipe-bridge /usr/local/bin/tool-call-pipe-bridge
 COPY --from=nsjail-builder /usr/local/bin/sandbox-supervisor-policy /usr/local/bin/sandbox-supervisor-policy
+COPY --from=nsjail-builder /usr/local/bin/public-web-namespace-enter /usr/local/bin/public-web-namespace-enter
 COPY --from=nsjail-builder /usr/local/lib/anonymous-pipes.node /usr/local/lib/anonymous-pipes.node
 ENV SANDBOX_PIPE_ADDON=/usr/local/lib/anonymous-pipes.node
 RUN chmod +x /usr/sbin/nsjail

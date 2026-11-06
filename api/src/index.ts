@@ -1,3 +1,4 @@
+import { initializePublicWebNamespace } from './public-web-namespace';
 import express from 'express';
 import { loadPackages } from './runtime';
 import { logger } from './logger';
@@ -69,6 +70,10 @@ async function main(): Promise<void> {
   validateHostedAppStartup();
   validateHardenedSandboxStartup();
   await initializeSandboxWorkspaceIsolation();
+  if (config.network_mode === 'public-web') {
+    if (!config.per_job_uids || !config.require_execution_manifest || !config.egress_gateway_url) throw new Error('Public web requires signed per-job admission');
+    await initializePublicWebNamespace();
+  }
   await startWarmupCommand();
 
   const [address, port] = config.bind_address.split(':');

@@ -28,6 +28,7 @@
   "dependencies": {
     "@aws-sdk/client-lambda-microvms": "3.1079.0",
     "@aws-sdk/client-s3": "3.1079.0",
+    "@aws-sdk/credential-providers": "3.1079.0",
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/core": "2.8.0",
     "@opentelemetry/exporter-trace-otlp-proto": "0.219.0",
@@ -44,7 +45,8 @@
     "nanoid": "^5.1.16",
     "prom-client": "^15.1.3",
     "rate-limit-redis": "^4.2.0",
-    "winston": "^3.14.2"
+    "winston": "^3.14.2",
+    "ws": "8.22.1"
   },
   "imports": {
     "@/*": "./src/*",
@@ -61,6 +63,7 @@
     "@types/express": "^4.17.21",
     "@types/ioredis-mock": "^8.2.7",
     "@types/node": "^22.5.5",
+    "@types/ws": "8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.0.1",
     "@typescript-eslint/parser": "^8.0.1",
     "eslint": "^8.57.0",

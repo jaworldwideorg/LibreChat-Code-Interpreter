@@ -21,3 +21,7 @@ data/
 
 # Editor config
 .vscode/
+
+# Local runner builds and protected test receipts
+/api/.build/
+/private/

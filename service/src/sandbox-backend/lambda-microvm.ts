@@ -1,3 +1,4 @@
+import { env } from '../config';
 import axios from 'axios';
 import { nanoid } from 'nanoid';
 import * as fs from 'fs';
@@ -1652,6 +1653,9 @@ export class LambdaMicrovmSandboxBackend implements SandboxBackend {
       });
       if (response.status !== 200) {
         throw new Error(`health returned ${response.status}`);
+      }
+      if (env.NETWORK_MODE === 'public-web' && (response.data?.network?.mode !== 'public-web' || response.data?.network?.policy_version !== 1)) {
+        throw new Error('Runner public web capability mismatch');
       }
     } catch (error) {
       throw new SandboxBackendError(

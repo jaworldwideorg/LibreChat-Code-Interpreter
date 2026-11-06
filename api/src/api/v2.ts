@@ -1,3 +1,4 @@
+import type { PublicWebCapability } from '../../../shared/public-web';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import type { Runtime } from '../runtime';
 import type { TFile } from '../job';
@@ -287,6 +288,7 @@ function getJob(
   toolCallSocketEnabled = false,
   isSynthetic = false,
   runtimeSessionHeader?: string | string[],
+  network?: PublicWebCapability,
 ): Job {
   const {
     session_id, language, version, args, stdin, files: rawFiles,
@@ -388,6 +390,7 @@ function getJob(
     extra_env_vars: sanitizeEnvVars(env_vars),
     output_session_id: body.output_session_id,
     egress_grant: egressGrantToken,
+    network,
     tool_call_socket_enabled: toolCallSocketEnabled,
     is_synthetic: isSynthetic,
     session,
@@ -547,6 +550,7 @@ router.post('/execute', express.json({ limit: config.execute_body_limit }), asyn
         toolCallSocketEnabled,
         verifiedManifest?.principal_source === SYNTHETIC_PRINCIPAL_SOURCE,
         req.headers[RUNTIME_SESSION_ID_HEADER],
+        verifiedManifest?.network,
       );
       metricsLanguage = job.runtime.language;
       markActiveExecution();
@@ -721,7 +725,7 @@ router.post('/workspace/execute', express.json({ limit: '256kb' }), async (req: 
 
 router.get('/health', async (_req: Request, res: Response) => {
   try {
-    return res.status(200).json(await checkSandboxWorkspaceHealth());
+    return res.status(200).json({ ...await checkSandboxWorkspaceHealth(), network: { mode: config.network_mode, policy_version: 1 } });
   } catch (error) {
     logger.error({ err: error }, 'Sandbox workspace health check failed');
     return res.status(503).json({

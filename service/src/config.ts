@@ -1,3 +1,4 @@
+import { publicWebMode } from '../../shared/public-web';
 import * as dotenv from 'dotenv';
 dotenv.config();
 import { nanoid } from 'nanoid';
@@ -310,6 +311,13 @@ export const env = {
   INSTANCE_ID: process.env.INSTANCE_ID ?? nanoid(),
   HTTP_JSON_LIMIT: process.env.CODEAPI_HTTP_JSON_LIMIT ?? '50mb',
   SANDBOX_ENDPOINT: process.env.SANDBOX_ENDPOINT ?? 'http://localhost:2000/api/v2',
+  QUEUE_PREFIX: (() => {
+    const prefix = process.env.CODEAPI_QUEUE_PREFIX ?? 'bull';
+    if (!/^[a-zA-Z0-9-]{1,64}$/.test(prefix)) throw new Error('Invalid CodeAPI queue prefix');
+    return prefix;
+  })(),
+  NETWORK_MODE: publicWebMode(process.env.CODEAPI_NETWORK_MODE),
+  PUBLIC_EGRESS_RELAY_URL: process.env.PUBLIC_EGRESS_RELAY_URL ?? '',
   EGRESS_GATEWAY_URL: process.env.EGRESS_GATEWAY_URL ?? '',
   FILE_SERVER_URL: process.env.FILE_SERVER_URL ?? 'http://localhost:3000',
   TOOL_CALL_SERVER_URL: process.env.TOOL_CALL_SERVER_URL ?? 'http://localhost:3033',

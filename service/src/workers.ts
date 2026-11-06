@@ -472,6 +472,7 @@ async function processJobInner(job: t.ExecuteJob): Promise<t.ExecuteResult> {
 // Each worker respects its own concurrency limit based on its co-located sandbox capacity
 export const pyWorker = new Worker(queueNames.python, processJob, {
   connection,
+  prefix: env.QUEUE_PREFIX,
   concurrency: env.PYTHON_CONCURRENCY,
   limiter: {
     max: env.PYTHON_CONCURRENCY,
@@ -481,6 +482,7 @@ export const pyWorker = new Worker(queueNames.python, processJob, {
 
 export const otherWorker = new Worker(queueNames.other, processJob, {
   connection,
+  prefix: env.QUEUE_PREFIX,
   concurrency: env.OTHER_CONCURRENCY,
   limiter: {
     max: env.OTHER_CONCURRENCY,
