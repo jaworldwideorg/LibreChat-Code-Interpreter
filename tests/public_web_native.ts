@@ -37,6 +37,10 @@ const openssl = spawnPipeProcess('/usr/bin/openssl', ['req', '-x509', '-newkey',
 openssl.stdin.end(); openssl.stdout.resume(); openssl.stderr.resume();
 assert.equal((await once(openssl, 'close'))[0], 0);
 const fixtureHandler: http.RequestListener = async (req, res) => {
+  if (req.url === '/large') {
+    res.writeHead(200, { 'Content-Length': 2 * 1024 * 1024 });
+    const bytes = Buffer.alloc(2 * 1024 * 1024, 42); res.end(bytes); return;
+  }
   if (req.url === '/idle') { setTimeout(() => res.end('late'), 1000); return; }
   if (req.url === '/redirect-private') { res.writeHead(302, { location: 'http://127.0.0.1/private' }).end(); return; }
   if (req.url === '/redirect') { res.writeHead(302, { location: '/proof' }).end(); return; }
@@ -56,7 +60,7 @@ const relay = createPublicEgressRelay({
     if (name === 'mixed.example') return [{ address: '93.184.216.34', ttl: 30 }, { address: '10.64.0.1', ttl: 30 }];
     return [{ address: '93.184.216.34', ttl: 30 }];
   },
-  connect: (_ip, port) => net.connect(((port === 443 ? tlsFixture.address() : fixture.address()) as net.AddressInfo).port, '127.0.0.1'),
+  connect: (_ip, port) => net.connect({ port: ((port === 443 ? tlsFixture.address() : fixture.address()) as net.AddressInfo).port, host: '127.0.0.1', allowHalfOpen: true }),
 });
 for (const server of [fixture, tlsFixture, relay]) { server.listen(0, '127.0.0.1'); await once(server, 'listening'); }
 const app = (await import('express')).default();
@@ -79,6 +83,7 @@ assert Path('/etc/resolv.conf').exists()
 d=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); d.settimeout(2); d.sendto(bytes.fromhex('002a01000001000000000000067075626c6963076578616d706c650000010001'), ('127.0.0.1',53)); assert d.recv(512)[3] == 128
 assert urllib.request.urlopen('http://public.example/proof').read() == b'public-web-proof:GET:0'
 assert urllib.request.urlopen('https://public.example/redirect').read() == b'public-web-proof:GET:0'
+assert urllib.request.urlopen('https://public.example/large').read() == bytes([42]) * (2 * 1024 * 1024)
 assert requests.post('https://public.example/proof', data=b'abc').content == b'public-web-proof:POST:3'
 assert urllib.request.urlopen('http://93.184.216.34/proof').read() == b'public-web-proof:GET:0'
 with ThreadPoolExecutor(max_workers=8) as pool:
