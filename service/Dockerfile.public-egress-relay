@@ -4,7 +4,7 @@ ENV NODE_ENV=production
 COPY service/package.json service/bun.lock ./
 RUN bun install --frozen-lockfile --production
 COPY service/src/public-egress-relay.ts ./src/public-egress-relay.ts
-COPY shared/public-web.ts /shared/public-web.ts
+COPY shared /shared
 EXPOSE 3191
 USER bun
 CMD ["bun", "run", "src/public-egress-relay.ts"]
