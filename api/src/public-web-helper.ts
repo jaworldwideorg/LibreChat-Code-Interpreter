@@ -3,6 +3,7 @@ import dgram from 'node:dgram';
 import http from 'node:http';
 import https from 'node:https';
 import { pipeline } from 'node:stream';
+import { closeSync } from 'node:fs';
 import WebSocket, { createWebSocketStream } from 'ws';
 import { isPublicIPv4, validateDnsName, validateWebDestination, type PublicWebCapability } from '../../shared/public-web';
 
@@ -48,10 +49,12 @@ export function dnsReply(packet: Buffer, addresses: Array<{ address: string; ttl
 }
 
 export async function startPublicWebHelper(options: {
-  address: string; gateway: string; grant: string; network: PublicWebCapability;
+  namespacePath: string; gateway: string; grant: string; network: PublicWebCapability;
   originalDestination: (fd: number) => { ip: string; port: number };
   sendDatagram: (fd: number, address: string, port: number, bytes: Buffer) => void;
-}): Promise<{ port: number; close: () => Promise<void> }> {
+  namespaceListeners: (path: string) => [number, number, number, number];
+  namespaceProbe: (path: string) => number;
+}): Promise<{ close: () => Promise<void> }> {
   const gateway = new URL(options.gateway);
   if (!['http:', 'https:'].includes(gateway.protocol) || gateway.username || gateway.password || gateway.pathname !== '/') throw new Error('Invalid gateway');
   // Admission proves authentication and relay availability without issuing
@@ -82,6 +85,7 @@ export async function startPublicWebHelper(options: {
   let recovered = false;
   let activeDns = 0;
   let dnsAttempts = 0;
+  const unclaimedDescriptors = new Set<number>();
   async function answer(packet: Buffer): Promise<Buffer> {
     const query = parseDnsQuestion(packet);
     // Return NODATA for AAAA; normal dual-stack clients select the A result.
@@ -137,14 +141,14 @@ export async function startPublicWebHelper(options: {
       }
     });
   });
-  const proxy = net.createServer({ pauseOnConnect: true }, socket => {
+  const proxyConnection = (socket: net.Socket): void => {
     sockets.add(socket); socket.once('close', () => sockets.delete(socket)); socket.on('error', () => socket.destroy());
     try {
       const fd = (socket as net.Socket & { _handle?: { fd: number } })._handle?.fd;
       if (fd === undefined) throw new Error('Missing native socket');
       const original = options.originalDestination(fd);
       if (probing) {
-        recovered = original.ip === options.address && original.port === (proxy.address() as net.AddressInfo).port;
+        recovered = original.ip === '93.184.216.34' && original.port === 443;
         socket.end(); return;
       }
       const destination = validateWebDestination(original);
@@ -166,29 +170,39 @@ export async function startPublicWebHelper(options: {
         pipeline(socket, stream, stop); pipeline(stream, socket, stop);
       });
     } catch { socket.destroy(); }
-  });
-  const listen = (server: net.Server): Promise<void> => new Promise((resolve, reject) => {
-    server.once('error', reject); server.listen(server === proxy ? 0 : 53, options.address, () => { server.removeListener('error', reject); resolve(); });
+  };
+  const proxies = [net.createServer({ pauseOnConnect: true }, proxyConnection), net.createServer({ pauseOnConnect: true }, proxyConnection)];
+  const listen = (server: net.Server, fd: number): Promise<void> => new Promise((resolve, reject) => {
+    server.once('error', reject); server.listen({ fd }, () => { unclaimedDescriptors.delete(fd); server.removeListener('error', reject); resolve(); });
   });
   const close = async (): Promise<void> => {
     if (closing) return;
     closing = true;
     for (const peer of peers) peer.terminate(); for (const socket of sockets) socket.destroy();
     try { dnsUdp.close(); } catch {}
-    await Promise.all([dnsTcp, proxy].map(server => new Promise<void>(resolve => server.close(() => resolve()))));
+    for (const fd of unclaimedDescriptors) {
+      try { closeSync(fd); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EBADF') throw error; }
+    }
+    unclaimedDescriptors.clear();
+    await Promise.all([dnsTcp, ...proxies].map(server => new Promise<void>(resolve => server.close(() => resolve()))));
   };
   try {
-    await new Promise<void>((resolve, reject) => { dnsUdp.once('error', reject); dnsUdp.bind(53, options.address, () => { dnsUdp.removeListener('error', reject); resolve(); }); });
-    await listen(dnsTcp); await listen(proxy);
+    // The descriptors belong to the job namespace, while this trusted
+    // process remains in the host namespace for authenticated gateway I/O.
+    const fds = options.namespaceListeners(options.namespacePath);
+    for (const fd of fds) unclaimedDescriptors.add(fd);
+    await new Promise<void>((resolve, reject) => { dnsUdp.once('error', reject); dnsUdp.bind({ fd: fds[2] }, () => { unclaimedDescriptors.delete(fds[2]); dnsUdp.removeListener('error', reject); resolve(); }); });
+    await listen(dnsTcp, fds[3]);
+    await listen(proxies[0], fds[0]); await listen(proxies[1], fds[1]);
     await new Promise<void>((resolve, reject) => {
-      const client = net.connect((proxy.address() as net.AddressInfo).port, options.address);
+      const client = new net.Socket({ fd: options.namespaceProbe(options.namespacePath), readable: true, writable: true });
       client.setTimeout(1000, () => client.destroy(new Error('Original destination probe timed out')));
       client.once('error', reject); client.resume();
       client.once('close', () => recovered ? resolve() : reject(new Error('Original destination recovery unavailable')));
     });
     probing = false;
     dnsUdp.on('error', () => { void close(); process.exitCode = 125; });
-    return { port: (proxy.address() as net.AddressInfo).port, close };
+    return { close };
   } catch (error) { await close(); throw error; }
 }
 
@@ -199,9 +213,11 @@ if (require.main === module) {
     let input = '';
     for await (const chunk of process.stdin) { input += chunk; if (input.length > 128 * 1024) throw new Error('Helper configuration too large'); }
     const native = require(process.env.SANDBOX_PIPE_ADDON || '/usr/local/lib/anonymous-pipes.node');
-    if (typeof native.originalDestination !== 'function' || typeof native.sendDatagram !== 'function') throw new Error('Public web native transport unavailable');
-    const helper = await startPublicWebHelper({ ...JSON.parse(input), originalDestination: native.originalDestination, sendDatagram: native.sendDatagram });
-    process.stdout.write(JSON.stringify({ port: helper.port }) + '\n');
+    if (typeof native.originalDestination !== 'function' || typeof native.sendDatagram !== 'function'
+      || typeof native.namespaceListeners !== 'function' || typeof native.namespaceProbe !== 'function') throw new Error('Public web native transport unavailable');
+    const helper = await startPublicWebHelper({ ...JSON.parse(input), originalDestination: native.originalDestination,
+      sendDatagram: native.sendDatagram, namespaceListeners: native.namespaceListeners, namespaceProbe: native.namespaceProbe });
+    process.stdout.write(JSON.stringify({ ready: true }) + '\n');
     const stop = (): void => { void helper.close().then(() => process.exit(0)); };
     process.once('SIGTERM', stop); process.once('SIGINT', stop);
   })().catch(() => { process.stderr.write('Public web helper failed\n'); process.exit(125); });

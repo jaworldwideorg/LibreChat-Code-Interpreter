@@ -5,14 +5,16 @@ capability in signed execution claims. `SANDBOX_NETWORK_MODE=public-web` enables
 the matching runner implementation. Both default to `off`. Existing execution
 requests and language clients need no additional parameters or proxy settings.
 
-Network-enabled jobs share the VM network namespace. Root-owned rules identify
-each job by its outside UID, reject all traffic without an active policy, and
-redirect public IPv4 TCP ports 80/443 to a private per-job proxy. DNS is limited
-to the job's local resolver. IPv6 and other ports remain denied. Filesystem,
-user, process, capability and the remaining syscall restrictions still apply.
+Each network-enabled job keeps its own root-owned network namespace, containing
+only loopback. A local IPv4 route delivers connections to trusted proxy sockets
+on ports 80/443. Those sockets belong to the job namespace; their root-owned
+helper stays in the host namespace to open authenticated gateway tunnels. There
+is no interface connecting the job to the host or physical network. DNS listens
+only on the job's loopback resolver. IPv6 socket creation and inbound listeners
+remain denied. Filesystem, user, process and syscall isolation still apply.
 
 The helper authenticates against the private gateway before admission and
-probes native original-destination recovery. The gateway uses the same durable
+probes routing and original-destination recovery via `getsockname`. The gateway uses the same durable
 execution ledger as file/tool grants, with atomic network accounting and
 revocation. A separate relay has no application credentials or task role and
 revalidates every destination before making a pinned IPv4 connection.
@@ -28,12 +30,20 @@ permits TCP transports on web ports; it does not inspect encrypted protocols.
 
 ## Runner prerequisites
 
-The image needs IPv4/IPv6 legacy netfilter, owner/mark matches, IPv4 NAT and
-conntrack original-destination support. Public mode requires signed admission,
-per-job UIDs and a configured gateway. Missing prerequisites reject admission.
-Helpers start on authorized executions after snapshot restore. Cleanup removes
-allowances, drains descendants and closes helpers before returning the UID to
-the pool. Failed cleanup retains the UID.
+The image needs Linux network namespaces, namespace bind mounts and the IPv4
+local route type. Startup probes these prerequisites before admitting jobs.
+Per-job setup checks the namespace owner/type, proxy sockets and actual original
+destination recovery. Public mode requires signed admission, per-job UIDs and a
+configured gateway. Missing prerequisites reject admission. Helpers start on
+authorized executions after snapshot restore. Cleanup closes the helpers,
+drains descendants and detaches the namespace before returning the UID to the
+pool. Failed setup cleanup or teardown quarantines the UID.
+
+The AWS managed kernel rejected both legacy owner matches and native nftables;
+its TUN device is also unavailable. The namespace/local-route primitive passed
+in the real Lambda MicroVM under the unchanged supervisor filter. The obsolete
+public-web firewall backend was removed. No netfilter modules, NAT, userspace
+TCP stack or syscall-policy exceptions are required by public web access.
 
 Packaged curl uses Debian security-backported sources with synchronous libc
 DNS, avoiding socketpair-based resolver IPC. jq 1.8.2 is checksum-pinned so
@@ -41,8 +51,8 @@ Bash tool-input canonicalization agrees with the server's numeric contract.
 
 ## Verification and release
 
-`api/src/public-web.test.ts` covers DNS framing, syscall policy and firewall
-admission failure. Run the real Redis suite separately:
+`api/src/public-web.test.ts` covers DNS framing, syscall policy and namespace
+prerequisite failures. Run the real Redis suite separately:
 
 ```sh
 cd service

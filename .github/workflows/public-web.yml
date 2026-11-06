@@ -50,9 +50,12 @@ jobs:
           bun test tests/public-web.test.ts
       - name: Build native policy and transport
         run: docker build --target nsjail-ipc-test -f api/Dockerfile -t public-web-native .
+      - name: Runner API regressions on Linux
+        run: |
+          docker run --rm --init -v "$PWD:/work" -w /work/api \
+            public-web-native /usr/local/bin/bun test
       - name: Unchanged clients under compiled Linux filters
         run: |
-          sudo modprobe -a ip6_tables ip6table_filter iptable_mangle iptable_nat xt_owner xt_mark
           docker network create public-web-test
           docker network connect public-web-test public-web-redis
           docker run --rm --privileged --network public-web-test \

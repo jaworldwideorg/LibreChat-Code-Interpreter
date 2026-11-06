@@ -1,4 +1,4 @@
-import { createPublicWebLease, type PublicWebLease } from './public-web-lease';
+import { createPublicWebLease, PublicWebCleanupError, type PublicWebLease } from './public-web-lease';
 import type { PublicWebCapability } from '../../shared/public-web';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1644,11 +1644,16 @@ export class Job {
     }
 
     if (this.network) {
-      this.networkLease ??= await createPublicWebLease(this.sandboxIdentity(), this.network, this.egressGrantToken ?? '');
+      try { this.networkLease ??= await createPublicWebLease(this.sandboxIdentity(), this.network, this.egressGrantToken ?? ''); }
+      catch (error) {
+        if (error instanceof PublicWebCleanupError) this.networkCleanupFailed = true;
+        throw error;
+      }
       this.networkLease.assertHealthy();
     }
     return execute({
       publicWebResolverFile: this.networkLease?.resolverFile,
+      publicWebNamespacePath: this.networkLease?.namespacePath,
       command,
       envVars,
       submissionDir: this.submissionDir,

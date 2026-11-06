@@ -6,6 +6,83 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#ifdef __linux__
+#include "public-web-namespace.h"
+
+static int namespace_argument(napi_env env, napi_callback_info info, char *path, size_t size) {
+    size_t count = 1, length = 0;
+    napi_value arg;
+    if (napi_get_cb_info(env, info, &count, &arg, NULL, NULL) != napi_ok || count != 1
+        || napi_get_value_string_utf8(env, arg, NULL, 0, &length) != napi_ok || length >= size
+        || napi_get_value_string_utf8(env, arg, path, size, &length) != napi_ok
+        || length != strlen(path) || cw_namespace_path(path) < 0) {
+        napi_throw_error(env, NULL, "Invalid public web namespace"); return -1;
+    }
+    return 0;
+}
+
+static napi_value create_namespace(napi_env env, napi_callback_info info) {
+    char path[256]; napi_value result;
+    if (namespace_argument(env, info, path, sizeof(path)) < 0) return NULL;
+    if (cw_create_namespace(path) < 0) {
+        napi_throw_error(env, NULL, "Public web namespace creation failed"); return NULL;
+    }
+    napi_get_undefined(env, &result); return result;
+}
+
+static napi_value delete_namespace(napi_env env, napi_callback_info info) {
+    char path[256]; napi_value result;
+    if (namespace_argument(env, info, path, sizeof(path)) < 0) return NULL;
+    int fd = cw_namespace_fd(path);
+    if (fd < 0) { napi_throw_error(env, NULL, "Public web namespace unavailable"); return NULL; }
+    close(fd);
+    if (umount2(path, MNT_DETACH) < 0 || unlink(path) < 0) {
+        napi_throw_error(env, NULL, "Public web namespace cleanup failed"); return NULL;
+    }
+    napi_get_undefined(env, &result); return result;
+}
+
+static napi_value namespace_listeners(napi_env env, napi_callback_info info) {
+    char path[256]; napi_value result, value;
+    if (namespace_argument(env, info, path, sizeof(path)) < 0) return NULL;
+    int saved = cw_enter_namespace(path);
+    if (saved < 0) { napi_throw_error(env, NULL, "Public web namespace unavailable"); return NULL; }
+    int fds[4] = {-1, -1, -1, -1};
+    fds[0] = cw_namespace_listener(SOCK_STREAM, "0.0.0.0", 80);
+    if (fds[0] >= 0) fds[1] = cw_namespace_listener(SOCK_STREAM, "0.0.0.0", 443);
+    if (fds[1] >= 0) fds[2] = cw_namespace_listener(SOCK_DGRAM, "127.0.0.1", 53);
+    if (fds[2] >= 0) fds[3] = cw_namespace_listener(SOCK_STREAM, "127.0.0.1", 53);
+    cw_restore_namespace(saved);
+    if (fds[3] < 0 || napi_create_array_with_length(env, 4, &result) != napi_ok) goto fail;
+    for (unsigned int i = 0; i < 4; i++) {
+        if (napi_create_int32(env, fds[i], &value) != napi_ok
+            || napi_set_element(env, result, i, value) != napi_ok) goto fail;
+    }
+    return result;
+fail:
+    for (unsigned int i = 0; i < 4; i++) if (fds[i] >= 0) close(fds[i]);
+    napi_throw_error(env, NULL, "Public web namespace listeners failed"); return NULL;
+}
+
+static napi_value namespace_probe(napi_env env, napi_callback_info info) {
+    char path[256]; napi_value result;
+    if (namespace_argument(env, info, path, sizeof(path)) < 0) return NULL;
+    int saved = cw_enter_namespace(path);
+    if (saved < 0) { napi_throw_error(env, NULL, "Public web namespace unavailable"); return NULL; }
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    struct sockaddr_in destination = { .sin_family = AF_INET, .sin_port = htons(443) };
+    inet_pton(AF_INET, "93.184.216.34", &destination.sin_addr);
+    if (fd >= 0 && connect(fd, (struct sockaddr *)&destination, sizeof(destination)) < 0) { close(fd); fd = -1; }
+    if (fd >= 0 && fcntl(fd, F_SETFL, O_NONBLOCK) < 0) { close(fd); fd = -1; }
+    cw_restore_namespace(saved);
+    if (fd < 0 || napi_create_int32(env, fd, &result) != napi_ok) {
+        if (fd >= 0) close(fd);
+        napi_throw_error(env, NULL, "Public web routing probe failed"); return NULL;
+    }
+    return result;
+}
+
+#endif
 
 static napi_value create_pipe(napi_env env, napi_callback_info info) {
     (void)info;
@@ -35,7 +112,7 @@ static napi_value original_destination(napi_env env, napi_callback_info info) {
     socklen_t length = sizeof(address);
     if (napi_get_cb_info(env, info, &count, args, NULL, NULL) != napi_ok || count != 1
         || napi_get_value_int32(env, args[0], &fd) != napi_ok || fd < 0
-        || getsockopt(fd, SOL_IP, 80 /* SO_ORIGINAL_DST */, &address, &length) != 0
+        || getsockname(fd, (struct sockaddr *)&address, &length) != 0
         || length != sizeof(address) || address.sin_family != AF_INET) {
         napi_throw_error(env, NULL, "original destination unavailable"); return NULL;
     }
@@ -85,6 +162,16 @@ static napi_value initialize(napi_env env, napi_value exports) {
         || napi_set_named_property(env, exports, "originalDestination", fn) != napi_ok
         || napi_create_function(env, "sendDatagram", NAPI_AUTO_LENGTH, send_datagram, NULL, &fn) != napi_ok
         || napi_set_named_property(env, exports, "sendDatagram", fn) != napi_ok) return NULL;
+#ifdef __linux__
+    if (napi_create_function(env, "createNetworkNamespace", NAPI_AUTO_LENGTH, create_namespace, NULL, &fn) != napi_ok
+        || napi_set_named_property(env, exports, "createNetworkNamespace", fn) != napi_ok
+        || napi_create_function(env, "deleteNetworkNamespace", NAPI_AUTO_LENGTH, delete_namespace, NULL, &fn) != napi_ok
+        || napi_set_named_property(env, exports, "deleteNetworkNamespace", fn) != napi_ok
+        || napi_create_function(env, "namespaceListeners", NAPI_AUTO_LENGTH, namespace_listeners, NULL, &fn) != napi_ok
+        || napi_set_named_property(env, exports, "namespaceListeners", fn) != napi_ok
+        || napi_create_function(env, "namespaceProbe", NAPI_AUTO_LENGTH, namespace_probe, NULL, &fn) != napi_ok
+        || napi_set_named_property(env, exports, "namespaceProbe", fn) != napi_ok) return NULL;
+#endif
     return exports;
 }
 NAPI_MODULE(NODE_GYP_MODULE_NAME, initialize)

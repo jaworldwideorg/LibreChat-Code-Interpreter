@@ -34,10 +34,13 @@ RUN git apply /tmp/nsjail-anonymous-control.patch && make -j$(nproc) NL3_EXISTS=
 COPY api/src/spec-guard.c /tmp/spec-guard.c
 COPY api/src/tool-call-pipe-bridge.c /tmp/tool-call-pipe-bridge.c
 COPY api/src/anonymous-pipes.c /tmp/anonymous-pipes.c
+COPY api/src/public-web-namespace.h /tmp/public-web-namespace.h
+COPY api/src/public-web-namespace-enter.c /tmp/public-web-namespace-enter.c
 COPY api/src/supervisor-policy.c /tmp/supervisor-policy.c
 COPY --from=node:22.23.4-slim /usr/local/include/node /usr/local/include/node
 COPY docker/rootfs-setup.c /tmp/rootfs-setup.c
 RUN gcc -shared -fPIC -O2 -Wall -Wextra -Werror -I/usr/local/include/node -o /usr/local/lib/anonymous-pipes.node /tmp/anonymous-pipes.c \
+    && gcc -O2 -static -Wall -Wextra -Werror -o /usr/local/bin/public-web-namespace-enter /tmp/public-web-namespace-enter.c \
     && gcc -O2 -static -Wall -Wextra -Werror -o /usr/local/bin/sandbox-supervisor-policy /tmp/supervisor-policy.c \
     && gcc -O2 -static -Wall -Wextra -Werror -o /usr/local/bin/tool-call-pipe-bridge /tmp/tool-call-pipe-bridge.c \
     && gcc -O2 -static -Wall -Wextra -Werror -o /usr/local/bin/spec-guard /tmp/spec-guard.c \
@@ -75,7 +78,7 @@ RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.s
 FROM nsjail-builder AS nsjail-ipc-test
 COPY --from=jq-builder /tmp/jq /usr/bin/jq
 COPY --from=pipe-curl-builder /opt/codeapi-curl/bin/curl /usr/local/bin/curl
-RUN apt-get update && apt-get install -y --no-install-recommends iptables python3-requests strace && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3-requests strace && rm -rf /var/lib/apt/lists/*
 ENV SANDBOX_PIPE_ADDON=/usr/local/lib/anonymous-pipes.node
 COPY docker/python-runtime /python-runtime
 RUN python3 /python-runtime/install.py
@@ -243,6 +246,7 @@ COPY --from=pipe-curl-builder /opt/codeapi-curl/bin/curl /usr/local/bin/curl
 COPY --from=nsjail-builder /usr/local/bin/spec-guard /usr/local/bin/spec-guard
 COPY --from=nsjail-builder /usr/local/bin/tool-call-pipe-bridge /usr/local/bin/tool-call-pipe-bridge
 COPY --from=nsjail-builder /usr/local/bin/sandbox-supervisor-policy /usr/local/bin/sandbox-supervisor-policy
+COPY --from=nsjail-builder /usr/local/bin/public-web-namespace-enter /usr/local/bin/public-web-namespace-enter
 COPY --from=nsjail-builder /usr/local/lib/anonymous-pipes.node /usr/local/lib/anonymous-pipes.node
 ENV SANDBOX_PIPE_ADDON=/usr/local/lib/anonymous-pipes.node
 RUN chmod +x /usr/sbin/nsjail

@@ -2,12 +2,14 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawnPipeProcess } from './pipe-process';
 import { config } from './config';
-import { installPublicWebFirewall } from './public-web-firewall';
+import { publicWebNamespaceNative } from './public-web-namespace';
 import { validatePublicWeb, type PublicWebCapability } from '../../shared/public-web';
 import type { SandboxJobIdentity } from './workspace-isolation';
 
+export class PublicWebCleanupError extends Error {}
+
 /** Root /proc sees the outside UID even when the job has its own user/PID
- * namespaces. Drain every descendant before dropping firewall state or
+ * namespaces. Drain every descendant before detaching the network namespace or
  * returning this UID to the pool; cgroup support is absent on Lambda today. */
 export async function drainPublicWebUid(uid: number): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt++) {
@@ -33,6 +35,7 @@ export async function drainPublicWebUid(uid: number): Promise<void> {
 
 export interface PublicWebLease {
   resolverFile: string;
+  namespacePath: string;
   assertHealthy: () => void;
   close: () => Promise<void>;
 }
@@ -43,22 +46,35 @@ export async function createPublicWebLease(identity: SandboxJobIdentity, network
     throw new Error('Public web runner admission denied');
   }
   const slot = identity.uid - config.job_uid_base;
-  if (slot >= 65535) throw new Error('Public web UID slot out of range');
-  const address = `127.64.${Math.floor(slot / 256)}.${slot % 256}`;
+  if (slot < 0 || slot >= config.job_uid_count) throw new Error('Public web UID slot out of range');
+  const address = '127.0.0.1';
   const directory = `/tmp/codeapi-network-${identity.uid}`;
-  await fs.mkdir(directory, { mode: 0o711 });
+  const native = publicWebNamespaceNative();
+  try { await fs.mkdir(directory, { mode: 0o711 }); }
+  catch (error) { throw new PublicWebCleanupError('Public web identity path unavailable', { cause: error }); }
+  const namespacePath = path.join(directory, 'netns');
   const resolverFile = path.join(directory, 'resolv.conf');
-  await fs.writeFile(resolverFile, `nameserver ${address}\noptions single-request timeout:2 attempts:2\n`, { mode: 0o444, flag: 'wx' });
+  let created = false;
+  const removeNamespace = async (): Promise<void> => {
+    if (created) { native.deleteNetworkNamespace(namespacePath); created = false; }
+    await fs.rm(directory, { recursive: true });
+  };
   let helper: ReturnType<typeof spawnPipeProcess>;
   try {
+    native.createNetworkNamespace(namespacePath);
+    created = true;
+    await fs.writeFile(resolverFile, `nameserver ${address}\noptions single-request timeout:2 attempts:2\n`, { mode: 0o444, flag: 'wx' });
     helper = spawnPipeProcess(process.env.PUBLIC_WEB_PIPE_BRIDGE ?? '/usr/local/bin/tool-call-pipe-bridge', [
       '--broker', process.env.PUBLIC_WEB_NODE ?? '/usr/local/bin/node',
       process.env.PUBLIC_WEB_HELPER_BUNDLE ?? path.resolve(__dirname, '..', '.build', 'public-web-helper.cjs'),
     ]);
-  } catch (error) { await fs.rm(directory, { recursive: true }); throw error; }
+  } catch (error) {
+    try { await removeNamespace(); }
+    catch (cleanup) { throw new PublicWebCleanupError('Public web setup cleanup failed', { cause: cleanup }); }
+    throw error;
+  }
   let failed = false;
   let closing = false;
-  let removeFirewall: (() => Promise<void>) | undefined;
   // Drain stderr without ever returning privileged configuration to the job.
   helper.stderr.resume();
   helper.once('error', () => { failed = true; });
@@ -68,24 +84,27 @@ export async function createPublicWebLease(identity: SandboxJobIdentity, network
   const close = async (): Promise<void> => {
     if (closing) return;
     closing = true;
-    // First deny all traffic, then kill descendants/helper, then reclaim files.
+    // Closing the only proxy/resolver sockets denies new traffic. The
+    // namespace has no interface or route to the host, even during failure.
     // Any failure propagates to Job.cleanup, which retains the UID slot.
     const errors: unknown[] = [];
-    try { await removeFirewall?.(); } catch (error) { errors.push(error); }
-    try { await drainPublicWebUid(identity.uid); } catch (error) { errors.push(error); }
+    let exited: Promise<void> | undefined;
     if (helper.exitCode === null && helper.signalCode === null) {
-      const exited = new Promise<void>((resolve, reject) => {
+      exited = new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => { helper.kill('SIGKILL'); reject(new Error('Public web helper did not drain')); }, 5000);
         helper.once('exit', () => { clearTimeout(timeout); resolve(); });
       });
+      void exited.catch(() => {});
       helper.kill('SIGTERM');
-      try { await exited; } catch (error) { errors.push(error); }
     }
-    if (errors.length) throw new Error('Public web cleanup failed; identity retained');
-    await fs.rm(directory, { recursive: true });
+    try { await drainPublicWebUid(identity.uid); } catch (error) { errors.push(error); }
+    try { await exited; } catch (error) { errors.push(error); }
+    if (errors.length) throw new PublicWebCleanupError('Public web cleanup failed; identity retained');
+    try { await removeNamespace(); }
+    catch (error) { throw new PublicWebCleanupError('Public web namespace cleanup failed; identity retained', { cause: error }); }
   };
   try {
-    const port = await new Promise<number>((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Public web helper admission timed out')), 10_000);
       let text = '';
       const fail = (): void => { clearTimeout(timer); reject(new Error('Public web helper unavailable')); };
@@ -95,13 +114,12 @@ export async function createPublicWebLease(identity: SandboxJobIdentity, network
         if (text.length > 128) { fail(); return; }
         if (text.includes('\n')) {
           clearTimeout(timer);
-          try { resolve(JSON.parse(text).port); } catch { fail(); }
+          try { if (JSON.parse(text).ready !== true) throw new Error('Invalid helper'); resolve(); } catch { fail(); }
         }
       });
-      helper.stdin.end(JSON.stringify({ address, gateway: config.egress_gateway_url, grant, network }));
+      helper.stdin.end(JSON.stringify({ namespacePath, gateway: config.egress_gateway_url, grant, network }));
     });
     if (failed) throw new Error('Public web helper failed');
-    removeFirewall = await installPublicWebFirewall(identity.uid, address, port);
-    return { resolverFile, assertHealthy: () => { if (failed || closing) throw new Error('Public web helper unavailable'); }, close };
+    return { resolverFile, namespacePath, assertHealthy: () => { if (failed || closing) throw new Error('Public web helper unavailable'); }, close };
   } catch (error) { await close(); throw error; }
 }

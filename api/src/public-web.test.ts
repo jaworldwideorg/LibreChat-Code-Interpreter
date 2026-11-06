@@ -1,6 +1,7 @@
 import { test, expect } from 'bun:test';
 import { parseDnsQuestion, dnsReply } from './public-web-helper';
-import { initializePublicWebFirewall, installPublicWebFirewall } from './public-web-firewall';
+import { initializePublicWebNamespace } from './public-web-namespace';
+import * as fs from 'node:fs/promises';
 import { publicWebSeccompPolicy } from './nsjail';
 
 function question(name = 'example.com', type = 1): Buffer {
@@ -24,40 +25,23 @@ test('public policy keeps Unix, raw, IPv6, descriptor and namespace denials', ()
   expect(policy).toContain('socketpair'); expect(policy).toContain('sendmsg, sendmmsg');
   expect(policy).toContain('unshare, setns, seccomp'); expect(policy).toContain('domain == AF_VSOCK');
 });
-test('baseline rejects the UID range in both families and admission never enables direct egress', async () => {
-  const calls: string[][] = [];
-  const command = async (binary: string, args: string[]) => { calls.push([binary, ...args]); };
-  await initializePublicWebFirewall(200000, 8, command);
-  expect(calls).toHaveLength(2); expect(calls[1][0]).toContain('ip6tables');
-  calls.length = 0;
-  const close = await installPublicWebFirewall(200001, '127.64.0.1', 40000, command);
-  expect(calls.some(c => c.includes('DNAT') && c.includes('127.64.0.1:40000'))).toBe(true);
-  expect(calls.some(c => c.includes('10.0.0.0/8') && c.includes('MARK'))).toBe(true);
-  const allowances = calls.filter(c => c.includes('ACCEPT'));
-  expect(allowances).toHaveLength(3); expect(allowances.every(c => c.includes('127.64.0.1'))).toBe(true);
-  await close();
-  const removed = calls.filter(c => c.includes('-D'));
-  expect(removed[0]).toContain('filter'); expect(removed).toHaveLength(3);
-});
-test('partial installation and missing IPv6 support reject admission', async () => {
-  await expect(initializePublicWebFirewall(200000, 8, async binary => {
-    if (binary.includes('ip6tables')) throw new Error('Missing IPv6 guard');
-  })).rejects.toThrow();
-  const calls: string[][] = [];
-  await expect(installPublicWebFirewall(200002, '127.64.0.2', 40000, async (_binary, args) => {
-    calls.push(args); if (args.includes('DNAT')) throw new Error('Missing NAT');
-  })).rejects.toThrow();
-  expect(calls.some(c => c.includes('ACCEPT'))).toBe(false);
-  expect(calls.filter(c => c.includes('-X'))).toHaveLength(3);
-});
-
-test('legacy IPv6 owner match still protects every UID when ranges are unsupported', async () => {
-  const protectedUids: string[] = [];
-  await initializePublicWebFirewall(200000, 3, async (binary, args) => {
-    if (!binary.includes('ip6tables')) return;
-    const uid = args[args.indexOf('--uid-owner') + 1];
-    if (uid.includes('-')) throw new Error('Unsupported owner range');
-    protectedUids.push(uid);
+test('namespace prerequisite failures reject startup and cleanup is mandatory', async () => {
+  const operations: string[] = [];
+  await initializePublicWebNamespace({
+    createNetworkNamespace: value => { operations.push('create:' + value); },
+    deleteNetworkNamespace: value => { operations.push('delete:' + value); },
   });
-  expect(protectedUids).toEqual(['200000', '200001', '200002']);
+  expect(operations).toHaveLength(2);
+  expect(operations[0].slice(7)).toBe(operations[1].slice(7));
+  await expect(initializePublicWebNamespace({
+    createNetworkNamespace: () => { throw new Error('Routing unavailable'); },
+    deleteNetworkNamespace: () => { throw new Error('Unexpected deletion'); },
+  })).rejects.toThrow('Routing unavailable');
+  let retained = '';
+  await expect(initializePublicWebNamespace({
+    createNetworkNamespace: value => { retained = value; },
+    deleteNetworkNamespace: () => { throw new Error('Detach failed'); },
+  })).rejects.toThrow('Detach failed');
+  expect(await fs.stat(retained.replace('/netns', ''))).toBeDefined();
+  await fs.rm(retained.replace('/netns', ''), { recursive: true });
 });
